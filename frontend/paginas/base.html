@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block Titulo %}{% endblock %}</title>
+    <link type="stylesheet" href="/frontend/CSS/site.css">
+</head>
+<body>
+    {% header %}
+    <header>
+
+    </header>
+    {% endblock %}
+
+    <main>
+        {% block Conteudo %}{% endblock %}
+    </main>
+
+    {% Footer %}
+    <footer>
+
+    </footer>
+    {% endblock %}
+
+    <script src="/frontend/script/site.js"></script>
+</body>
+</html>

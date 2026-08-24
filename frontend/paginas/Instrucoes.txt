@@ -1,0 +1,3 @@
+Colocar todas páginas nessa pasta e organizar depois
+
+base.html --> Html padrão que contém o footer e header padrão

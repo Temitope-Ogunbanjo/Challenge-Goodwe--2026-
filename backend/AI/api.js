@@ -1,0 +1,1 @@
+// Chamadas via fetch para o FastAPI

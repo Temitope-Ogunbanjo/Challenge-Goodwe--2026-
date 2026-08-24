@@ -1,0 +1,2 @@
+Precisamos configurar o docker, modelos e verificações  do banco de dados postgreSQL
+Também precisa fazer a conexão com o projeto físico.
