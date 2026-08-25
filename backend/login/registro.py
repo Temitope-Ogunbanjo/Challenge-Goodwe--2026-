@@ -5,18 +5,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
-
-# ==========================================
-# CONFIGURAÇÃO DO BANCO DE DADOS (PostgreSQL / Render)
-# ==========================================
-DATABASE_URL = "postgresql+psycopg://goodwe_back:mBs0XKLEm2H8t34EovfH8Wwccm2sKUPP@dpg-da6elg8n74is73es5220-a.virginia-postgres.render.com/db_goodwe"
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-class Base(DeclarativeBase):
-    pass
+from main import Base, SessionLocal, engine
 
 
 # ==========================================
