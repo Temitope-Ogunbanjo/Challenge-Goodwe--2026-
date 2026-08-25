@@ -2,51 +2,11 @@ import re
 from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
+from sqlalchemy.orm import Session
 from werkzeug.security import check_password_hash, generate_password_hash
-from main import Base, SessionLocal, engine
 
-
-# ==========================================
-# MODELOS DO BANCO DE DADOS (ORM - SQLAlchemy)
-# ==========================================
-
-
-class UsuarioModel(Base):
-    __tablename__ = "usuarios"
-
-    id = Column(Integer, primary_key=True, index=True)
-    nome_completo = Column(String(120), nullable=False)
-    email = Column(String(120), unique=True, nullable=False, index=True)
-    cpf = Column(String(14), unique=True, nullable=False, index=True)
-    telefone = Column(String(20), unique=True, nullable=False)
-    senha_hash = Column(String(255), nullable=False)
-    cep_endereco = Column(String(200), nullable=False)
-
-    veiculos = relationship(
-        "VeiculoModel",
-        back_populates="proprietario",
-        cascade="all, delete-orphan",
-    )
-
-
-class VeiculoModel(Base):
-    __tablename__ = "veiculos"
-
-    id = Column(Integer, primary_key=True, index=True)
-    marca = Column(String(50), nullable=False)
-    modelo_ano = Column(String(80), nullable=False)
-    placa = Column(String(10), unique=True, nullable=False, index=True)
-    cor = Column(String(30), nullable=False)
-    carroceria = Column(String(50), nullable=False)
-    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
-
-    proprietario = relationship("UsuarioModel", back_populates="veiculos")
-
-
-# Criação automática das tabelas no PostgreSQL
-Base.metadata.create_all(bind=engine)
+from app.models.usuario import Usuario 
+from main import SessionLocal
 
 # ==========================================
 # SCHEMAS DE VALIDAÇÃO (Pydantic)
@@ -77,7 +37,7 @@ class LoginSchema(BaseModel):
 
 
 # ==========================================
-# FUNÇÕES AUXILIARES 
+# FUNÇÕES AUXILIARES
 # ==========================================
 
 
@@ -129,36 +89,23 @@ def registrar_usuario(
     email = dados.email.strip().lower()
     cpf = sanitizar_numeros(dados.cpf)
     telefone = sanitizar_numeros(dados.telefone)
-    placa = dados.veiculo.placa.strip().upper()
 
-    # 3. Verificação de Duplicatas
-    if (
-        db.query(UsuarioModel)
-        .filter(UsuarioModel.email == email)
-        .first()
-    ):
+    # 3. Verificação de Duplicatas no Model Usuario
+    if db.query(Usuario).filter(Usuario.email == email).first():
         raise HTTPException(
             status_code=409, detail="Este e-mail já está cadastrado."
         )
-    if db.query(UsuarioModel).filter(UsuarioModel.cpf == cpf).first():
+    if db.query(Usuario).filter(Usuario.cpf == cpf).first():
         raise HTTPException(
             status_code=409, detail="Este CPF já está cadastrado."
         )
-    if (
-        db.query(UsuarioModel)
-        .filter(UsuarioModel.telefone == telefone)
-        .first()
-    ):
+    if db.query(Usuario).filter(Usuario.telefone == telefone).first():
         raise HTTPException(
             status_code=409, detail="Este telefone já está cadastrado."
         )
-    if db.query(VeiculoModel).filter(VeiculoModel.placa == placa).first():
-        raise HTTPException(
-            status_code=409, detail="Esta placa já está cadastrada."
-        )
 
     # 4. Criação do Usuário
-    novo_usuario = UsuarioModel(
+    novo_usuario = Usuario(
         nome_completo=dados.nome_completo,
         email=email,
         cpf=cpf,
@@ -168,23 +115,11 @@ def registrar_usuario(
     )
 
     db.add(novo_usuario)
-    db.flush()
-
-    # 5. Criação do Veículo
-    novo_veiculo = VeiculoModel(
-        marca=dados.veiculo.marca,
-        modelo_ano=dados.veiculo.modelo_ano,
-        placa=placa,
-        cor=dados.veiculo.cor,
-        carroceria=dados.veiculo.carroceria,
-        usuario_id=novo_usuario.id,
-    )
-
-    db.add(novo_veiculo)
     db.commit()
+    db.refresh(novo_usuario)
 
     return {
-        "mensagem": "Usuário e veículo cadastrados com sucesso!",
+        "mensagem": "Usuário cadastrado com sucesso!",
         "usuario_id": novo_usuario.id,
     }
 
@@ -193,24 +128,21 @@ def registrar_usuario(
 def login(dados: LoginSchema, db: Session = Depends(get_db)):
     identificador_limpo = sanitizar_numeros(dados.login)
 
-    # Busca usuário por Email ou por CPF
+    # Busca usuário por Email ou por CPF usando a classe Usuario
     usuario = (
-        db.query(UsuarioModel)
+        db.query(Usuario)
         .filter(
-            (UsuarioModel.email == dados.login.strip().lower())
-            | (UsuarioModel.cpf == identificador_limpo)
+            (Usuario.email == dados.login.strip().lower())
+            | (Usuario.cpf == identificador_limpo)
         )
         .first()
     )
 
-    if not usuario or not check_password_hash(
-        usuario.senha_hash, dados.senha
-    ):
+    if not usuario or not check_password_hash(usuario.senha_hash, dados.senha):
         raise HTTPException(
             status_code=401, detail="Credenciais inválidas."
         )
 
-    # Simulação de envio do código 2FA
     codigo_2fa = "123456"
 
     return {
@@ -223,5 +155,4 @@ def login(dados: LoginSchema, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-    app.run(debug=True)
+    uvicorn.run("registro:app", host="127.0.0.1", port=8000, reload=True)
