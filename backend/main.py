@@ -1,18 +1,24 @@
-from pathlib import Path
-from fastapi import FastAPI, Request
-from Fastapi.templating import Jinja2Templates
+from contextlib import asynccontextmanager
 
-App = FastAPI()
+from fastapi import FastAPI
 
-def SetarTemplates():
-    pathTemplates = Path(__file__).resolve().parent.parent / "frontend" / "paginas"
-    return Jinja2Templates(directory=pathTemplates)
+from app.api.router import api_router
+from app.db.session import engine
 
-Templates = SetarTemplates()
 
-@App.get("/{nome_pagina}")
-def Carregar(request : Request, Nome: str):
-    Arquivo = f"{Nome}.html"
-    return Templates.TemplatesResponse(Arquivo, {"request" : Request})
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    engine.dispose()
 
-#Carregar é para a lógica de footer/header padronizados
+
+app = FastAPI(
+    title="GoodWe API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.include_router(
+    api_router,
+    prefix="/api",
+)
