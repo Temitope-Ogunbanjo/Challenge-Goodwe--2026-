@@ -1,185 +1,238 @@
 import re
-from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
+from typing import List, Optional
+from fastapi import Depends, FastAPI, HTTPException, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from werkzeug.security import check_password_hash, generate_password_hash
 
-app = Flask(__name__)
+# ==========================================
+# CONFIGURAÇÃO DO BANCO DE DADOS (PostgreSQL / Render)
+# ==========================================
+DATABASE_URL = "postgresql+psycopg://goodwe_back:mBs0XKLEm2H8t34EovfH8Wwccm2sKUPP@dpg-da6elg8n74is73es5220-a.virginia-postgres.render.com/db_goodwe"
 
-# Configuração do Banco de Dados
-# Para produção, troque a linha abaixo pelo URI do PostgreSQL/MySQL (ex: "postgresql://user:pass@localhost/db")
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///ev_charging.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-db = SQLAlchemy(app)
+
+class Base(DeclarativeBase):
+    pass
+
 
 # ==========================================
-# MODELOS DO BANCO DE DADOS (ORM)
+# MODELOS DO BANCO DE DADOS (ORM - SQLAlchemy)
 # ==========================================
 
 
-class Usuario(db.Model):
-    """Modelo da tabela de usuários.
+class UsuarioModel(Base):
+    __tablename__ = "usuarios"
 
-    Campos únicos (email, CPF, telefone) garantem que não existam duplicatas no sistema.
-    """
+    id = Column(Integer, primary_key=True, index=True)
+    nome_completo = Column(String(120), nullable=False)
+    email = Column(String(120), unique=True, nullable=False, index=True)
+    cpf = Column(String(14), unique=True, nullable=False, index=True)
+    telefone = Column(String(20), unique=True, nullable=False)
+    senha_hash = Column(String(255), nullable=False)
+    cep_endereco = Column(String(200), nullable=False)
 
-    id = db.Column(db.Integer, primary_key=True)
-    nome_completo = db.Column(db.String(120), nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    cpf = db.Column(db.String(14), unique=True, nullable=False)
-    telefone = db.Column(db.String(20), unique=True, nullable=False)
-    senha_hash = db.Column(db.String(255), nullable=False)
-    cep_endereco = db.Column(db.String(200), nullable=False)
-
-    # Relacionamento 1-para-Muitos com Veículos
-    veiculos = db.relationship(
-        "Veiculo", backref="proprietario", lazy=True, cascade="all, delete-orphan"
+    veiculos = relationship(
+        "VeiculoModel",
+        back_populates="proprietario",
+        cascade="all, delete-orphan",
     )
 
 
-class Veiculo(db.Model):
-    """Modelo da tabela de veículos associados ao usuário."""
+class VeiculoModel(Base):
+    __tablename__ = "veiculos"
 
-    id = db.Column(db.Integer, primary_key=True)
-    marca = db.Column(db.String(50), nullable=False)
-    modelo_ano = db.Column(db.String(80), nullable=False)
-    placa = db.Column(db.String(10), unique=True, nullable=False)
-    cor = db.Column(db.String(30), nullable=False)
-    carroceria = db.Column(db.String(50), nullable=False)
-    usuario_id = db.Column(
-        db.Integer, db.ForeignKey("usuario.id"), nullable=False
-    )
+    id = Column(Integer, primary_key=True, index=True)
+    marca = Column(String(50), nullable=False)
+    modelo_ano = Column(String(80), nullable=False)
+    placa = Column(String(10), unique=True, nullable=False, index=True)
+    cor = Column(String(30), nullable=False)
+    carroceria = Column(String(50), nullable=False)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
+
+    proprietario = relationship("UsuarioModel", back_populates="veiculos")
+
+
+# Criação automática das tabelas no PostgreSQL
+Base.metadata.create_all(bind=engine)
+
+# ==========================================
+# SCHEMAS DE VALIDAÇÃO (Pydantic)
+# ==========================================
+
+
+class VeiculoSchema(BaseModel):
+    marca: str
+    modelo_ano: str
+    placa: str
+    cor: str
+    carroceria: str
+
+
+class RegistroUsuarioSchema(BaseModel):
+    nome_completo: str
+    email: EmailStr
+    cpf: str
+    telefone: str
+    senha: str
+    cep_endereco: str
+    veiculo: VeiculoSchema
+
+
+class LoginSchema(BaseModel):
+    login: str  # Pode ser Email ou CPF
+    senha: str
 
 
 # ==========================================
-# FUNÇÕES DE VALIDAÇÃO REGRAS DE NEGÓCIO
+# FUNÇÕES AUXILIARES 
 # ==========================================
 
 
-def validar_senha(senha):
-    """Valida se a senha tem no mínimo 4 caracteres e pelo menos 2 letras."""
+def get_db():
+    """Gerencia a sessão com o banco de dados por requisição."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def validar_senha(senha: str) -> bool:
+    """Garante no mínimo 4 caracteres e 2 letras."""
     if len(senha) < 4:
         return False
     letras = len(re.findall(r"[a-zA-Z]", senha))
     return letras >= 2
 
 
-def sanitizar_numeros(texto):
-    """Remove caracteres especiais de CPF e Telefone (deixa apenas números)."""
+def sanitizar_numeros(texto: str) -> str:
+    """Remove pontuações e mantém apenas números."""
     return re.sub(r"\D", "", texto)
 
 
 # ==========================================
-# ROTAS DA API
+# APLICAÇÃO FASTAPI E ROTAS
 # ==========================================
 
+app = FastAPI(
+    title="EV Charging Station API",
+    description="API de cadastro, login e mapeamento para carregadores de veículos elétricos.",
+    version="1.0.0",
+)
 
-@app.route("/api/registro", methods=["POST"])
-def registrar_usuario():
-    """Rota para cadastro do usuário e veículo."""
-    data = request.get_json()
 
+@app.post("/api/registro", status_code=status.HTTP_201_CREATED)
+def registrar_usuario(
+    dados: RegistroUsuarioSchema, db: Session = Depends(get_db)
+):
     # 1. Validação de Senha
-    senha = data.get("senha", "")
-    if not validar_senha(senha):
-        return (
-            jsonify(
-                {
-                    "erro": "A senha deve ter no mínimo 4 caracteres e conter pelo menos 2 letras."
-                }
-            ),
-            400,
+    if not validar_senha(dados.senha):
+        raise HTTPException(
+            status_code=400,
+            detail="A senha deve ter no mínimo 4 caracteres e conter pelo menos 2 letras.",
         )
 
-    # 2. Tratamento de identificadores únicos
-    email = data.get("email", "").strip().lower()
-    cpf = sanitizar_numeros(data.get("cpf", ""))
-    telefone = sanitizar_numeros(data.get("telefone", ""))
+    # 2. Tratamento de campos
+    email = dados.email.strip().lower()
+    cpf = sanitizar_numeros(dados.cpf)
+    telefone = sanitizar_numeros(dados.telefone)
+    placa = dados.veiculo.placa.strip().upper()
 
-    # 3. Verificação de Duplicidades (Email, CPF, Telefone)
-    if Usuario.query.filter_by(email=email).first():
-        return jsonify({"erro": "Este e-mail já está cadastrado."}), 409
-    if Usuario.query.filter_by(cpf=cpf).first():
-        return jsonify({"erro": "Este CPF já está cadastrado."}), 409
-    if Usuario.query.filter_by(telefone=telefone).first():
-        return jsonify({"erro": "Este telefone já está cadastrado."}), 409
+    # 3. Verificação de Duplicatas
+    if (
+        db.query(UsuarioModel)
+        .filter(UsuarioModel.email == email)
+        .first()
+    ):
+        raise HTTPException(
+            status_code=409, detail="Este e-mail já está cadastrado."
+        )
+    if db.query(UsuarioModel).filter(UsuarioModel.cpf == cpf).first():
+        raise HTTPException(
+            status_code=409, detail="Este CPF já está cadastrado."
+        )
+    if (
+        db.query(UsuarioModel)
+        .filter(UsuarioModel.telefone == telefone)
+        .first()
+    ):
+        raise HTTPException(
+            status_code=409, detail="Este telefone já está cadastrado."
+        )
+    if db.query(VeiculoModel).filter(VeiculoModel.placa == placa).first():
+        raise HTTPException(
+            status_code=409, detail="Esta placa já está cadastrada."
+        )
 
     # 4. Criação do Usuário
-    novo_usuario = Usuario(
-        nome_completo=data.get("nome_completo"),
+    novo_usuario = UsuarioModel(
+        nome_completo=dados.nome_completo,
         email=email,
         cpf=cpf,
         telefone=telefone,
-        senha_hash=generate_password_hash(senha),
-        cep_endereco=data.get("cep_endereco"),
+        senha_hash=generate_password_hash(dados.senha),
+        cep_endereco=dados.cep_endereco,
     )
 
-    db.session.add(novo_usuario)
-    db.session.flush()  # Gera o ID do novo usuário sem comitar a transação ainda
+    db.add(novo_usuario)
+    db.flush()
 
-    # 5. Associação do Veículo
-    veiculo_data = data.get("veiculo", {})
-    novo_veiculo = Veiculo(
-        marca=veiculo_data.get("marca"),
-        modelo_ano=veiculo_data.get("modelo_ano"),
-        placa=veiculo_data.get("placa", "").upper(),
-        cor=veiculo_data.get("cor"),
-        carroceria=veiculo_data.get("carroceria"),
+    # 5. Criação do Veículo
+    novo_veiculo = VeiculoModel(
+        marca=dados.veiculo.marca,
+        modelo_ano=dados.veiculo.modelo_ano,
+        placa=placa,
+        cor=dados.veiculo.cor,
+        carroceria=dados.veiculo.carroceria,
         usuario_id=novo_usuario.id,
     )
 
-    db.session.add(novo_veiculo)
-    db.session.commit()
+    db.add(novo_veiculo)
+    db.commit()
 
-    return (
-        jsonify(
-            {
-                "mensagem": "Usuário e veículo cadastrados com sucesso!",
-                "usuario_id": novo_usuario.id,
-            }
-        ),
-        201,
+    return {
+        "mensagem": "Usuário e veículo cadastrados com sucesso!",
+        "usuario_id": novo_usuario.id,
+    }
+
+
+@app.post("/api/login")
+def login(dados: LoginSchema, db: Session = Depends(get_db)):
+    identificador_limpo = sanitizar_numeros(dados.login)
+
+    # Busca usuário por Email ou por CPF
+    usuario = (
+        db.query(UsuarioModel)
+        .filter(
+            (UsuarioModel.email == dados.login.strip().lower())
+            | (UsuarioModel.cpf == identificador_limpo)
+        )
+        .first()
     )
 
-
-@app.route("/api/login", methods=["POST"])
-def login():
-    """Passo 1 do Login: Valida credenciais e gera código de verificação (2FA)."""
-    data = request.get_json()
-    identificador = data.get("login")  # Pode ser Email ou CPF
-    senha = data.get("senha")
-
-    if not identificador or not senha:
-        return (
-            jsonify({"erro": "Forneça o login (Email/CPF) e a senha."}),
-            400,
+    if not usuario or not check_password_hash(
+        usuario.senha_hash, dados.senha
+    ):
+        raise HTTPException(
+            status_code=401, detail="Credenciais inválidas."
         )
 
-    # Identifica se a entrada é CPF ou Email
-    identificador_limpo = sanitizar_numeros(identificador)
-    usuario = Usuario.query.filter(
-        (Usuario.email == identificador.lower())
-        | (Usuario.cpf == identificador_limpo)
-    ).first()
+    # Simulação de envio do código 2FA
+    codigo_2fa = "123456"
 
-    if not usuario or not check_password_hash(usuario.senha_hash, senha):
-        return jsonify({"erro": "Credenciais inválidas."}), 401
-
-    # SIMULAÇÃO DE ENVIO DE CÓDIGO 2FA (WhatsApp / SMS / Email)
-    # Em produção, aqui você chamará APIs externas como Twilio ou SendGrid
-    codigo_2fa = "123456"  # Exemplo fixo para testes dev
-
-    return jsonify(
-        {
-            "mensagem": "Credenciais válidas. Digite o código enviado para o seu dispositivo.",
-            "usuario_id": usuario.id,
-            "metodo_envio": "WhatsApp/Email",
-            "codigo_dev_teste": codigo_2fa,  # Remover em produção!
-        }
-    )
+    return {
+        "mensagem": "Credenciais válidas. Digite o código enviado para o seu dispositivo.",
+        "usuario_id": usuario.id,
+        "codigo_dev_teste": codigo_2fa,
+    }
 
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()  # Cria as tabelas do banco automaticamente no SQLite local
+    import uvicorn
+
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
     app.run(debug=True)
